@@ -6,7 +6,7 @@ const CFG = {
   PRECO_FARDO: 0,                             // 0 = digitar o valor na mão
   FREQ_PADRAO: 7                              // dias entre visitas
 };
-let D = { Clientes: [], Pedidos: [], Visitas: [] }, tab = 'hoje', rmode = 'entrega';
+let D = { Clientes: [], Pedidos: [], Visitas: [] }, tab = ['hoje', 'pedidos', 'rota', 'clientes'].includes(location.hash.slice(1)) ? location.hash.slice(1) : 'hoje', rmode = 'entrega';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -114,7 +114,7 @@ async function useGPS() {
     if (!f.endereco.value && ad.road) f.endereco.value = ad.road + (ad.house_number ? ', ' + ad.house_number : '');
     if (!f.bairro.value) f.bairro.value = ad.suburb || ad.neighbourhood || '';
   } catch { }
-  toast('Localização preenchida: confira o número');
+  saveDraft(); toast('Localização preenchida: confira o número');
 }
 const hav = (a, b) => {
   const r = x => x * Math.PI / 180, dl = r(b.lat - a.lat), dn = r(b.lng - a.lng);
@@ -163,7 +163,7 @@ async function fillGeo() {
 }
 
 /* ---------- telas ---------- */
-const go = t => { tab = t; render(); window.scrollTo(0, 0); };
+const go = t => { tab = t; history.replaceState(null, '', '#' + t); render(); window.scrollTo(0, 0); };
 function render() {
   const sb = $('#send'); sb.textContent = 'Enviar' + (Q.length ? ' (' + Q.length + ')' : ''); sb.className = Q.length ? 'p' : '';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
@@ -227,8 +227,21 @@ function lc() {
 }
 
 /* ---------- formulários ---------- */
-const dlg = h => { $('#dlg').innerHTML = h; $('#dlg').showModal(); };
-const close = () => $('#dlg').close();
+let DK = null;
+const dlg = (h, k, a) => { DK = k ? { k, a } : null; $('#dlg').innerHTML = h; $('#dlg').showModal(); };
+function saveDraft() { const f = $('#dlg form'); if (!f || !DK) return; try { sessionStorage.setItem('rg_rascunho', JSON.stringify({ ...DK, v: Object.fromEntries(new FormData(f)) })); } catch { } }
+$('#dlg').addEventListener('input', saveDraft);
+$('#dlg').addEventListener('close', () => { DK = null; try { sessionStorage.removeItem('rg_rascunho'); } catch { } });
+function restore() {
+  let d = null; try { d = JSON.parse(sessionStorage.getItem('rg_rascunho') || 'null'); } catch { }
+  if (!d) return;
+  const v = d.v || {};
+  if (d.k === 'c') fCliente(d.a || undefined); else { fPedido(v.clienteId || undefined); setTipo(v.tipo || 'venda'); }
+  const f = $('#dlg form');
+  Object.keys(v).forEach(k => { if (k !== 'clienteId' && k !== 'tipo' && f[k]) f[k].value = v[k]; });
+  if (d.k === 'p') tot();
+}
+const closeDlg = () => $('#dlg').close();
 
 function fCliente(id) {
   const c = C(id) || { freq: CFG.FREQ_PADRAO };
@@ -242,7 +255,7 @@ function fCliente(id) {
 <label>Visitar a cada (dias)</label><input name="freq" type="number" inputmode="numeric" min="1" value="${esc(c.freq)}">
 <label>Coordenadas</label><input name="coord" value="${hasGeo(c) ? c.lat + ', ' + c.lng : ''}">
 <label>Observações</label><textarea name="obs" rows="2">${esc(c.obs)}</textarea></details>
-<div class="row"><button class="p">Salvar</button><button type="button" onclick="close()">Fechar</button>${id ? `<button type="button" class="d" onclick="xCliente('${id}')">Excluir</button>` : ''}</div></form>`);
+<div class="row"><button class="p">Salvar</button><button type="button" onclick="closeDlg()">Fechar</button>${id ? `<button type="button" class="d" onclick="xCliente('${id}')">Excluir</button>` : ''}</div></form>`, 'c', id || '');
 }
 async function sCliente(e, id) {
   e.preventDefault();
@@ -253,12 +266,12 @@ async function sCliente(e, id) {
   if (coord && (coord !== oldCoord || !changed)) [lat, lng] = coord.split(/[,;\s]+/);
   else toast('Salvo. A localização é buscada ao tocar em Enviar');
   const { coord: _, ...rest } = f;
-  close();
+  closeDlg();
   await put('Clientes', { id: id || uid(), criado: old.criado || new Date().toISOString(), ...rest, lat, lng });
 }
 async function xCliente(id) {
   if (!confirm('Excluir este cliente?')) return;
-  close(); await del('Clientes', C(id));
+  closeDlg(); await del('Clientes', C(id));
 }
 
 const isTroca = x => x.tipo === 'troca';
@@ -271,7 +284,7 @@ function setTipo(t) {
   tot();
 }
 const lastPed = cid => D.Pedidos.filter(p => p.clienteId == cid && +p.fardos > 0).sort((a, b) => new Date(b.criado) - new Date(a.criado))[0];
-const tot = () => { const f = $('#dlg form'); $('#tt').textContent = f.tipo.value === 'troca' ? 'Troca: sem cobrança' : 'Total: ' + brl(f.fardos.value * f.preco.value); };
+const tot = () => { const f = $('#dlg form'); saveDraft(); $('#tt').textContent = f.tipo.value === 'troca' ? 'Troca: sem cobrança' : 'Total: ' + brl(f.fardos.value * f.preco.value); };
 const stp = (d, n) => { const i = $('#dlg [name=fardos]'); i.value = Math.max(1, n || (+i.value || 0) + d); tot(); };
 function fPedido(cid) {
   if (!D.Clientes.length) return toast('Cadastre um cliente primeiro');
@@ -283,7 +296,7 @@ function fPedido(cid) {
 <div id="pp"><label>Preço do fardo (R$)</label><input name="preco" type="number" inputmode="decimal" step="0.01" min="0" required placeholder="Digite o preço" oninput="tot()"></div>
 <div class="total" id="tt"></div>
 <details><summary>Observação</summary><input name="obs"></details>
-<div class="row"><button class="p big">Salvar pedido</button><button type="button" onclick="close()">Fechar</button></div></form>`);
+<div class="row"><button class="p big">Salvar pedido</button><button type="button" onclick="closeDlg()">Fechar</button></div></form>`, 'p');
   pickCli(cid);
 }
 function pickCli(cid) {
@@ -309,9 +322,9 @@ async function sPedido(e) {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
   if (!f.clienteId) return toast('Escolha o cliente');
-  close();
+  closeDlg();
   await put('Pedidos', { id: uid(), clienteId: f.clienteId, fardos: f.fardos, tipo: f.tipo, valor: f.tipo === 'troca' ? '0' : (f.fardos * (f.preco || 0)).toFixed(2), obs: f.obs || '', status: 'Pendente', criado: new Date().toISOString(), entregue: '' });
   toast('Pedido salvo');
 }
 
-load().then(() => autoSend(3000));
+load().then(() => { restore(); autoSend(3000); });
