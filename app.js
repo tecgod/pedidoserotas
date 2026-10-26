@@ -190,7 +190,7 @@ function vPedidos() {
 ${Object.keys(by).map(id => `<div class="card"><b>${by[id]}</b> fardo(s) — ${esc(C(id)?.nome || '?')}</div>`).join('') || '<p class="m">Nada pendente.</p>'}
 <h2>Pedidos pendentes (${p.length})</h2>
 ${p.map(x => { const c = C(x.clienteId) || {}; return `<div class="card"><div class="t">${esc(c.nome)}</div><div class="m">${addr(c)}</div>
-<div>${x.fardos} fardo(s) · ${brl(x.valor)}</div>${x.obs ? `<div class="m">${esc(x.obs)}</div>` : ''}
+<div>${x.fardos} fardo(s) · ${vtxt(x)}</div>${x.obs ? `<div class="m">${esc(x.obs)}</div>` : ''}
 <div class="row"><button class="p" onclick="deliver('${x.id}')">Entregue</button><button class="d" onclick="cancelPed('${x.id}')">Cancelar</button></div></div>`; }).join('')}`;
 }
 
@@ -208,7 +208,7 @@ async function vRota() {
   $('#v').innerHTML = seg + (path.length ? `<div class="card"><b>${path.length} parada(s)</b> · cerca de ${(km * 1.3).toFixed(1)} km${gps ? '' : ' (a partir da 1ª parada: ative o GPS para partir de onde você está)'}
 <div class="row">${links.map((u, i) => `<a class="btn p" href="${u}" target="_blank" rel="noopener">Abrir no Maps${links.length > 1 ? ' – trecho ' + (i + 1) : ''}</a>`).join('')}</div></div>` : '<p class="m">Nenhuma parada com localização.</p>') +
     path.map((c, i) => { const f = pend().filter(p => p.clienteId == c.id).reduce((s, x) => s + +x.fardos, 0); return `<div class="card stop"><div class="n">${i + 1}</div><div style="flex:1"><div class="t">${esc(c.nome)}</div><div class="m">${addr(c)}</div>
-<div class="m">${ent ? f + ' fardo(s) · ' + brl(pend().filter(p => p.clienteId == c.id).reduce((s, x) => s + +x.valor, 0)) : lastTxt(c.id)}</div>
+<div class="m">${ent ? f + ' fardo(s) · ' + vc(c.id) : lastTxt(c.id)}</div>
 <div class="row">${ent ? `<button class="p" onclick="deliverClient('${c.id}')">Entregue</button>` : `<button class="p" onclick="fPedido('${c.id}')">Fazer pedido</button><button onclick="visit('${c.id}')">Visitei</button>`}</div></div></div>`; }).join('') +
     (sem.length ? `<h2>Sem localização (${sem.length})</h2>${sem.map(c => `<div class="card">${esc(c.nome)} <span class="m">– edite o endereço em Clientes</span></div>`).join('')}` : '') +
     (miss ? `<div class="row"><button onclick="fillGeo()">Localizar ${miss} endereço(s) automaticamente</button></div>` : '');
@@ -261,16 +261,26 @@ async function xCliente(id) {
   close(); await del('Clientes', C(id));
 }
 
+const isTroca = x => x.tipo === 'troca';
+const vtxt = x => isTroca(x) ? 'TROCA' : brl(x.valor);
+const vc = id => { const ps = pend().filter(p => p.clienteId == id), v = ps.reduce((s, x) => s + +x.valor, 0), t = ps.some(isTroca); return (v || !t ? brl(v) : '') + (v && t ? ' + ' : '') + (t ? 'troca' : ''); };
+function setTipo(t) {
+  const f = $('#dlg form'); f.tipo.value = t;
+  $('#bv').classList.toggle('on', t === 'venda'); $('#bt').classList.toggle('on', t === 'troca');
+  $('#pp').hidden = t === 'troca'; f.preco.required = t !== 'troca'; if (t === 'troca') f.preco.value = '';
+  tot();
+}
 const lastPed = cid => D.Pedidos.filter(p => p.clienteId == cid && +p.fardos > 0).sort((a, b) => new Date(b.criado) - new Date(a.criado))[0];
-const tot = () => { const f = $('#dlg form'); $('#tt').textContent = 'Total: ' + brl(f.fardos.value * f.preco.value); };
+const tot = () => { const f = $('#dlg form'); $('#tt').textContent = f.tipo.value === 'troca' ? 'Troca: sem cobrança' : 'Total: ' + brl(f.fardos.value * f.preco.value); };
 const stp = (d, n) => { const i = $('#dlg [name=fardos]'); i.value = Math.max(1, n || (+i.value || 0) + d); tot(); };
 function fPedido(cid) {
   if (!D.Clientes.length) return toast('Cadastre um cliente primeiro');
   dlg(`<form onsubmit="sPedido(event)"><h2 style="margin-top:0">Novo pedido</h2>
-<input type="hidden" name="clienteId"><div id="pc"></div>
+<input type="hidden" name="clienteId"><input type="hidden" name="tipo" value="venda"><div id="pc"></div>
+<div class="seg"><button type="button" id="bv" class="on" onclick="setTipo('venda')">Venda</button><button type="button" id="bt" onclick="setTipo('troca')">Troca</button></div>
 <label>Fardos</label><div class="step"><button type="button" onclick="stp(-1)">−</button><input name="fardos" type="number" inputmode="numeric" min="1" value="1" oninput="tot()"><button type="button" onclick="stp(1)">+</button></div>
 <div class="chips">${[1, 2, 3, 5, 10].map(n => `<button type="button" onclick="stp(0,${n})">${n}</button>`).join('')}</div>
-<label>Preço do fardo (R$)</label><input name="preco" type="number" inputmode="decimal" step="0.01" min="0" value="${CFG.PRECO_FARDO || ''}" oninput="tot()">
+<div id="pp"><label>Preço do fardo (R$)</label><input name="preco" type="number" inputmode="decimal" step="0.01" min="0" required placeholder="Digite o preço" oninput="tot()"></div>
 <div class="total" id="tt"></div>
 <details><summary>Observação</summary><input name="obs"></details>
 <div class="row"><button class="p big">Salvar pedido</button><button type="button" onclick="close()">Fechar</button></div></form>`);
@@ -281,7 +291,7 @@ function pickCli(cid) {
   if (cid) {
     const c = C(cid), l = lastPed(cid);
     f.clienteId.value = cid;
-    if (l) { f.fardos.value = l.fardos; f.preco.value = (l.valor / l.fardos).toFixed(2); }
+    if (l) f.fardos.value = l.fardos;
     box.innerHTML = `<div class="card"><div class="t">${esc(c.nome)}</div><div class="m">${addr(c)}</div><button type="button" onclick="pickCli()" style="margin-top:8px">Trocar cliente</button></div>`;
     tot(); return;
   }
@@ -300,7 +310,7 @@ async function sPedido(e) {
   const f = Object.fromEntries(new FormData(e.target));
   if (!f.clienteId) return toast('Escolha o cliente');
   close();
-  await put('Pedidos', { id: uid(), clienteId: f.clienteId, fardos: f.fardos, valor: (f.fardos * (f.preco || 0)).toFixed(2), obs: f.obs || '', status: 'Pendente', criado: new Date().toISOString(), entregue: '' });
+  await put('Pedidos', { id: uid(), clienteId: f.clienteId, fardos: f.fardos, tipo: f.tipo, valor: f.tipo === 'troca' ? '0' : (f.fardos * (f.preco || 0)).toFixed(2), obs: f.obs || '', status: 'Pendente', criado: new Date().toISOString(), entregue: '' });
   toast('Pedido salvo');
 }
 
