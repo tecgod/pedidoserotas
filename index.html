@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<title>Rotas da Goma</title>
+<style>
+:root{--bg:#f2f5f6;--card:#fff;--ink:#13222b;--mut:#5d6f7a;--line:#d9e1e5;--pri:#0f766e;--onpri:#fff;--warn:#b45309;--warnbg:#fef3c7;--bad:#b91c1c}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1a20;--card:#16262e;--ink:#e8f0f3;--mut:#93a7b1;--line:#27404b;--pri:#2dd4bf;--onpri:#042f2b;--warn:#fbbf24;--warnbg:#3a2c0a;--bad:#f87171}}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:76px}
+header{position:sticky;top:0;z-index:5;display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:var(--pri);color:var(--onpri)}
+h1{font-size:19px;margin:0}h2{font-size:16px;margin:20px 0 8px}
+main{max-width:720px;margin:0 auto;padding:12px 14px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stats div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;color:var(--mut)}
+.stats b{display:block;font-size:20px;color:var(--ink)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px;margin:8px 0}
+.card .t{font-weight:650}.m{color:var(--mut);font-size:14px}.w{color:var(--warn);font-weight:600}.bad{color:var(--bad)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button,.btn{font:inherit;font-size:14px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:8px;padding:9px 12px;cursor:pointer;text-decoration:none;display:inline-block}
+button.p,.btn.p{background:var(--pri);color:var(--onpri);border-color:var(--pri);font-weight:600}
+button.d{color:var(--bad)}
+input,select,textarea{font:inherit;width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);margin:4px 0 10px}
+label{font-size:13px;color:var(--mut)}
+nav{position:fixed;bottom:0;left:0;right:0;display:grid;grid-template-columns:repeat(4,1fr);background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+nav button{border:0;border-radius:0;background:none;padding:12px 4px;font-size:13px;color:var(--mut)}
+nav button.on{color:var(--pri);font-weight:700;box-shadow:inset 0 3px 0 var(--pri)}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);width:min(92vw,460px);padding:16px}
+dialog::backdrop{background:#0008}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:6px 0}
+.seg button.on{background:var(--pri);color:var(--onpri);border-color:var(--pri)}
+.stop{display:flex;gap:10px}.stop .n{flex:none;width:28px;height:28px;border-radius:50%;background:var(--pri);color:var(--onpri);display:grid;place-items:center;font-weight:700;font-size:14px}
+#toast{position:fixed;left:50%;bottom:88px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 14px;border-radius:8px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header><h1>Rotas da Goma</h1><button id="sync" onclick="load()" aria-label="Atualizar">Atualizar</button></header>
+<main id="v"><p class="m">Carregando…</p></main>
+<nav id="tabs">
+<button data-t="hoje" onclick="go('hoje')">Hoje</button>
+<button data-t="pedidos" onclick="go('pedidos')">Pedidos</button>
+<button data-t="rota" onclick="go('rota')">Rota</button>
+<button data-t="clientes" onclick="go('clientes')">Clientes</button>
+</nav>
+<dialog id="dlg"></dialog>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
