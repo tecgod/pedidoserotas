@@ -18,29 +18,54 @@ const toast = m => { const t = $('#toast'); t.textContent = m; t.className = 'sh
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* ---------- dados ---------- */
+/* Fila de alterações: tudo que você faz fica "em pausa" e só vai para a planilha ao tocar em Enviar.
+   Só a fila (o que ainda não foi enviado) fica guardada no navegador, para não perder se fechar a página. */
+let Q = []; try { Q = JSON.parse(localStorage.getItem('rg_fila') || '[]'); } catch { Q = []; }
+const saveQ = () => { try { localStorage.setItem('rg_fila', JSON.stringify(Q)); } catch { } };
+function applyOp(o) {
+  const a = D[o.sheet];
+  if (o.op === 'delete') D[o.sheet] = a.filter(r => r.id != o.row.id);
+  else { const i = a.findIndex(r => r.id == o.row.id); i >= 0 ? a[i] = o.row : a.push(o.row); }
+}
+function queue(sheet, op, row) {
+  const o = { sheet, op, row };
+  applyOp(o);
+  Q = Q.filter(x => !(x.sheet === sheet && x.row.id == row.id)); Q.push(o); saveQ(); render(); autoSend();
+}
+const put = async (sheet, row) => queue(sheet, 'upsert', row);
+const del = async (sheet, row) => queue(sheet, 'delete', row);
 async function load() {
   try {
     const j = await (await fetch(CFG.API_URL + '?key=' + encodeURIComponent(CFG.KEY))).json();
     if (j.error) throw j.error;
-    D = j;
+    D = j; Q.forEach(applyOp); // mantém o que ainda não foi enviado
   } catch (e) { toast('Erro ao carregar: ' + e); }
   render();
 }
-async function send(sheet, op, row) {
+let timer = null, sending = false, fails = 0;
+function autoSend(ms = 8000) { clearTimeout(timer); if (Q.length) timer = setTimeout(() => sendAll(true), ms); } // envia sozinho após alguns segundos parado
+async function sendAll(auto) {
+  if (sending) return;
+  if (!Q.length) return auto || toast('Nada para enviar');
+  if (!navigator.onLine) return toast('Sem internet: fica guardado e envia quando voltar');
+  sending = true; const b = $('#send'); b.disabled = true;
+  const snap = [...Q]; // o que foi feito durante o envio fica na fila para a próxima
   try {
-    const j = await (await fetch(CFG.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ key: CFG.KEY, sheet, op, row }) })).json();
+    for (const o of snap) if (o.sheet === 'Clientes' && o.op === 'upsert' && !hasGeo(o.row) && o.row.endereco) {
+      toast('Localizando ' + o.row.nome + '…');
+      const g = await geo(o.row.endereco, o.row.bairro);
+      if (g) { Object.assign(o.row, g); applyOp(o); }
+    }
+    toast('Enviando ' + snap.length + ' alteração(ões)…');
+    const j = await (await fetch(CFG.API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ key: CFG.KEY, op: 'batch', ops: snap }) })).json();
     if (j.error) throw j.error;
-  } catch (e) { toast('Erro ao salvar: ' + e); }
+    Q = Q.filter(x => !snap.includes(x)); saveQ(); fails = 0; toast('Enviado!');
+    await load();
+  } catch (e) { toast('Erro ao enviar: ' + e + ' (nada foi perdido)'); if (++fails < 5) autoSend(30000); }
+  sending = false; b.disabled = false; render();
 }
-async function put(sheet, row) {
-  const i = D[sheet].findIndex(r => r.id == row.id);
-  i >= 0 ? D[sheet][i] = row : D[sheet].push(row);
-  render(); await send(sheet, 'upsert', row);
-}
-async function del(sheet, row) {
-  D[sheet] = D[sheet].filter(r => r.id != row.id);
-  render(); await send(sheet, 'delete', row);
-}
+window.addEventListener('online', () => autoSend(2000));
+window.addEventListener('beforeunload', e => { if (Q.length) { e.preventDefault(); e.returnValue = ''; } });
 
 /* ---------- regras ---------- */
 const last = id => D.Visitas.filter(v => v.clienteId == id).map(v => +new Date(v.data)).sort((a, b) => b - a)[0];
@@ -79,11 +104,17 @@ async function geo(addr, bairro = '') { // tenta várias formas do endereço
   return null;
 }
 async function useGPS() {
-  toast('Pegando sua localização…');
+  toast('Pegando sua localização…'); GT = 0;
   const p = await here();
   if (!p) return toast('Não consegui o GPS: libere a localização no navegador');
-  $('#dlg [name=coord]').value = p.lat.toFixed(6) + ', ' + p.lng.toFixed(6);
-  toast('Localização preenchida');
+  const f = $('#dlg form');
+  f.coord.value = p.lat.toFixed(6) + ', ' + p.lng.toFixed(6);
+  try {
+    const r = await (await fetch('https://nominatim.openstreetmap.org/reverse?format=json&addressdetails=1&lat=' + p.lat + '&lon=' + p.lng)).json(), ad = r.address || {};
+    if (!f.endereco.value && ad.road) f.endereco.value = ad.road + (ad.house_number ? ', ' + ad.house_number : '');
+    if (!f.bairro.value) f.bairro.value = ad.suburb || ad.neighbourhood || '';
+  } catch { }
+  toast('Localização preenchida: confira o número');
 }
 const hav = (a, b) => {
   const r = x => x * Math.PI / 180, dl = r(b.lat - a.lat), dn = r(b.lng - a.lng);
@@ -108,8 +139,9 @@ function optimize(pts, start) { // vizinho mais próximo + 2-opt
   }
   return path;
 }
-const here = () => new Promise(r => navigator.geolocation
-  ? navigator.geolocation.getCurrentPosition(p => r({ lat: p.coords.latitude, lng: p.coords.longitude }), () => r(null), { timeout: 6000 })
+let GP = null, GT = 0;
+const here = () => GP && Date.now() - GT < 6e4 ? Promise.resolve(GP) : new Promise(r => navigator.geolocation
+  ? navigator.geolocation.getCurrentPosition(p => { GP = { lat: p.coords.latitude, lng: p.coords.longitude }; GT = Date.now(); r(GP); }, () => r(null), { timeout: 6000, maximumAge: 30000 })
   : r(null));
 function mapLinks(path) { // Google Maps aceita até 10 paradas por link
   const co = p => p.lat + ',' + p.lng, out = [];
@@ -127,19 +159,21 @@ async function fillGeo() {
     if (g) await put('Clientes', { ...miss[i], ...g });
     await sleep(1100); // limite do serviço gratuito: 1 consulta/segundo
   }
-  toast('Pronto'); render();
+  toast('Pronto: toque em Enviar para gravar na planilha'); render();
 }
 
 /* ---------- telas ---------- */
 const go = t => { tab = t; render(); window.scrollTo(0, 0); };
 function render() {
+  const sb = $('#send'); sb.textContent = 'Enviar' + (Q.length ? ' (' + Q.length + ')' : ''); sb.className = Q.length ? 'p' : '';
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
   ({ hoje: vHoje, pedidos: vPedidos, rota: vRota, clientes: vClientes })[tab]();
 }
 const addr = c => esc([c.endereco, c.bairro].filter(Boolean).join(' – ')) || '<span class="bad">sem endereço</span>';
-const cliCard = c => `<div class="card"><div class="t">${esc(c.nome)}</div>
-<div class="m">${addr(c)}</div><div class="m ${needs(c) ? 'w' : ''}">${lastTxt(c.id)}</div>
-<div class="row"><button class="p" onclick="fPedido('${c.id}')">Fazer pedido</button><button onclick="visit('${c.id}').then(()=>toast('Visita registrada'))">Visitei</button>${c.telefone ? `<a class="btn" href="${wa(c.telefone)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}</div></div>`;
+const chip = id => { const d = days(id); return `<span class="chip ${d === null || d > 14 ? 'r' : d >= 7 ? 'y' : 'g'}">${d === null ? 'novo' : d === 0 ? 'hoje' : d + ' d'}</span>`; };
+const cliCard = c => `<div class="card"><div class="t">${esc(c.nome)} ${chip(c.id)}</div>
+<div class="m">${addr(c)}</div>
+<div class="row"><button class="p" onclick="fPedido('${c.id}')">Pedido</button><button onclick="visit('${c.id}').then(()=>toast('Visita registrada'))">Visitei</button>${c.telefone ? `<a class="btn" href="${wa(c.telefone)}" target="_blank" rel="noopener">WhatsApp</a><a class="btn" href="tel:${esc(c.telefone)}">Ligar</a>` : ''}</div></div>`;
 
 function vHoje() {
   const p = pend(), fd = p.reduce((s, x) => s + +x.fardos, 0), vl = p.reduce((s, x) => s + +x.valor, 0), nv = D.Clientes.filter(needs);
@@ -199,14 +233,15 @@ const close = () => $('#dlg').close();
 function fCliente(id) {
   const c = C(id) || { freq: CFG.FREQ_PADRAO };
   dlg(`<form onsubmit="sCliente(event,'${id || ''}')"><h2 style="margin-top:0">${id ? 'Editar' : 'Novo'} cliente</h2>
-<label>Nome</label><input name="nome" required value="${esc(c.nome)}">
-<label>Telefone (WhatsApp)</label><input name="telefone" type="tel" value="${esc(c.telefone)}">
-<label>Endereço (rua e número)</label><input name="endereco" required value="${esc(c.endereco)}">
+<button type="button" class="p big" onclick="useGPS()">Estou no cliente: preencher pela localização</button>
+<label>Nome</label><input name="nome" required autocomplete="off" value="${esc(c.nome)}">
+<label>Endereço</label><input name="endereco" required autocomplete="off" value="${esc(c.endereco)}">
+<label>Telefone</label><input name="telefone" type="tel" inputmode="tel" value="${esc(c.telefone)}">
+<details><summary>Mais opções</summary>
 <label>Bairro</label><input name="bairro" value="${esc(c.bairro)}">
-<label>Visitar a cada (dias)</label><input name="freq" type="number" min="1" value="${esc(c.freq)}">
-<label>Coordenadas (preenchidas sozinhas pelo endereço)</label><input name="coord" value="${hasGeo(c) ? c.lat + ', ' + c.lng : ''}">
-<button type="button" onclick="useGPS()" style="margin-bottom:10px">Estou no cliente: usar minha localização</button>
-<label>Observações</label><textarea name="obs" rows="2">${esc(c.obs)}</textarea>
+<label>Visitar a cada (dias)</label><input name="freq" type="number" inputmode="numeric" min="1" value="${esc(c.freq)}">
+<label>Coordenadas</label><input name="coord" value="${hasGeo(c) ? c.lat + ', ' + c.lng : ''}">
+<label>Observações</label><textarea name="obs" rows="2">${esc(c.obs)}</textarea></details>
 <div class="row"><button class="p">Salvar</button><button type="button" onclick="close()">Fechar</button>${id ? `<button type="button" class="d" onclick="xCliente('${id}')">Excluir</button>` : ''}</div></form>`);
 }
 async function sCliente(e, id) {
@@ -216,7 +251,7 @@ async function sCliente(e, id) {
   const oldCoord = hasGeo(old) ? old.lat + ', ' + old.lng : '';
   let lat = '', lng = '';
   if (coord && (coord !== oldCoord || !changed)) [lat, lng] = coord.split(/[,;\s]+/);
-  else { toast('Localizando endereço…'); const g = await geo(f.endereco, f.bairro); if (g) ({ lat, lng } = g); else toast('Endereço não localizado: cole as coordenadas depois'); }
+  else toast('Salvo. A localização é buscada ao tocar em Enviar');
   const { coord: _, ...rest } = f;
   close();
   await put('Clientes', { id: id || uid(), criado: old.criado || new Date().toISOString(), ...rest, lat, lng });
@@ -226,21 +261,47 @@ async function xCliente(id) {
   close(); await del('Clientes', C(id));
 }
 
+const lastPed = cid => D.Pedidos.filter(p => p.clienteId == cid && +p.fardos > 0).sort((a, b) => new Date(b.criado) - new Date(a.criado))[0];
+const tot = () => { const f = $('#dlg form'); $('#tt').textContent = 'Total: ' + brl(f.fardos.value * f.preco.value); };
+const stp = (d, n) => { const i = $('#dlg [name=fardos]'); i.value = Math.max(1, n || (+i.value || 0) + d); tot(); };
 function fPedido(cid) {
   if (!D.Clientes.length) return toast('Cadastre um cliente primeiro');
-  const opts = [...D.Clientes].sort((a, b) => a.nome.localeCompare(b.nome)).map(c => `<option value="${c.id}" ${c.id == cid ? 'selected' : ''}>${esc(c.nome)}</option>`).join('');
   dlg(`<form onsubmit="sPedido(event)"><h2 style="margin-top:0">Novo pedido</h2>
-<label>Cliente</label><select name="clienteId">${opts}</select>
-<label>Quantidade de fardos</label><input name="fardos" type="number" min="1" required oninput="if(${CFG.PRECO_FARDO})this.form.valor.value=(this.value*${CFG.PRECO_FARDO}).toFixed(2)">
-<label>Valor total (R$)</label><input name="valor" type="number" step="0.01" min="0" required>
-<label>Observações</label><input name="obs">
-<div class="row"><button class="p">Salvar pedido</button><button type="button" onclick="close()">Fechar</button></div></form>`);
+<input type="hidden" name="clienteId"><div id="pc"></div>
+<label>Fardos</label><div class="step"><button type="button" onclick="stp(-1)">−</button><input name="fardos" type="number" inputmode="numeric" min="1" value="1" oninput="tot()"><button type="button" onclick="stp(1)">+</button></div>
+<div class="chips">${[1, 2, 3, 5, 10].map(n => `<button type="button" onclick="stp(0,${n})">${n}</button>`).join('')}</div>
+<label>Preço do fardo (R$)</label><input name="preco" type="number" inputmode="decimal" step="0.01" min="0" value="${CFG.PRECO_FARDO || ''}" oninput="tot()">
+<div class="total" id="tt"></div>
+<details><summary>Observação</summary><input name="obs"></details>
+<div class="row"><button class="p big">Salvar pedido</button><button type="button" onclick="close()">Fechar</button></div></form>`);
+  pickCli(cid);
+}
+function pickCli(cid) {
+  const f = $('#dlg form'), box = $('#pc');
+  if (cid) {
+    const c = C(cid), l = lastPed(cid);
+    f.clienteId.value = cid;
+    if (l) { f.fardos.value = l.fardos; f.preco.value = (l.valor / l.fardos).toFixed(2); }
+    box.innerHTML = `<div class="card"><div class="t">${esc(c.nome)}</div><div class="m">${addr(c)}</div><button type="button" onclick="pickCli()" style="margin-top:8px">Trocar cliente</button></div>`;
+    tot(); return;
+  }
+  f.clienteId.value = '';
+  box.innerHTML = '<label>Cliente</label><input id="cs" placeholder="Digite parte do nome" oninput="csl()" autocomplete="off"><div id="cl"></div>';
+  csl(); tot();
+}
+function csl() {
+  const q = ($('#cs').value || '').toLowerCase();
+  $('#cl').innerHTML = D.Clientes.filter(c => (c.nome + ' ' + c.bairro).toLowerCase().includes(q))
+    .sort((a, b) => (needs(b) - needs(a)) || a.nome.localeCompare(b.nome)).slice(0, 6)
+    .map(c => `<button type="button" class="big" onclick="pickCli('${c.id}')">${esc(c.nome)} ${chip(c.id)}</button>`).join('') || '<p class="m">Ninguém encontrado.</p>';
 }
 async function sPedido(e) {
   e.preventDefault();
   const f = Object.fromEntries(new FormData(e.target));
-  close(); await put('Pedidos', { id: uid(), ...f, status: 'Pendente', criado: new Date().toISOString(), entregue: '' });
+  if (!f.clienteId) return toast('Escolha o cliente');
+  close();
+  await put('Pedidos', { id: uid(), clienteId: f.clienteId, fardos: f.fardos, valor: (f.fardos * (f.preco || 0)).toFixed(2), obs: f.obs || '', status: 'Pendente', criado: new Date().toISOString(), entregue: '' });
   toast('Pedido salvo');
 }
 
-load();
+load().then(() => autoSend(3000));
